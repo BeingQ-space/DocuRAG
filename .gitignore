@@ -1,0 +1,30 @@
+# Key related
+.env
+*.env
+!.env.example
+
+# Directories
+pdf_db/
+chroma_db/
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ragenv/
+.Python
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# Exported history-based files
+qa_history_*.md
+qa_history_*.txt

@@ -1,0 +1,10 @@
+certifi==2026.5.20
+cffi==2.0.0
+mlx==0.31.2
+numpy==2.4.6
+openvino==2026.1.0
+openvino-telemetry==2025.2.0
+pycparser==3.0
+rpds-py==2026.5.1
+TBB==2023.0.0
+wheel==0.47.0
