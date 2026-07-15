@@ -33,7 +33,7 @@ Below are the exact steps the application follows to process the questions asked
 langchain                   # orchestration
 langchain-community         # PyPDFLoader
 langchain-core              # prompts, documents
-langchain-text-splitters
+langchain-text-splitters    # chunking
 langchain-huggingface       # embeddings
 langchain-chroma            # vector store wrapper
 langchain-anthropic         # Claude
