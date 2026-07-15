@@ -11,7 +11,7 @@ Retrieval Augmented Generation (RAG) solves those problems by retrieving the rel
 ## Features
 - **Grounded answers with verifiable citations.** Each answer carries inline `[n]` markers that map to the retrieved passages shown beneath it, so you can check any claim against its source.
 - **Any PDF, any domain.** Drop unencrypted PDFs into a folder or upload them (multiple at once) through the interface.
-- **Incremental ingestion.** An SHA-256 manifest tracks which files have already been indexed, so unchanged docs are never re-embedded on subsequent runs.
+- **Incremental ingestion.** A SHA-256 manifest tracks which files have already been indexed, so unchanged docs are never re-embedded on subsequent runs.
 - **Multi-LLM provider compatible.** Switch between cloud and fully local models at runtime from the Model tab, without touching the code.
 - **Session tools.** Query history with per-entry copy and clear or export to Markdown or plain text.
 - **Privacy first.** API keys entered in the UI are held in session memory only — never written to disk or logged. With a local model, no data leaves your machine.
