@@ -5,6 +5,7 @@ A private, locally-run web application that answers questions about your own col
 Modern LLMs pose two problems:
 1. Lack of access to new, private, or confidential data, and
 2. Hallucination
+
 Retrieval Augmented Generation (RAG) solves those problems by retrieving the relevant passages from your documents first, then asks the model to answer using only those passages, with numbered citations, so you can verify every claim against the original text.
 
 ## Features
