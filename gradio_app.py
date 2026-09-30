@@ -22,7 +22,7 @@ Wraps the rag_pipeline module in a web UI with three tabs:
 - Model (runtime provider/model selection). API keys entered here
     are held in session state only, never written to the disk.
 
-P.S. File contains 6 sections and 12 functions.
+P.S. File contains 6 sections and 14 functions.
 """
 
 
@@ -33,8 +33,8 @@ from pathlib import Path
 
 import gradio as gr
 
+import agent_pipeline as agent
 import rag_pipeline as rag
-
 
 ########################################################################
 MAX_CHUNKS = 10             # max passage boxes pre-built
@@ -89,9 +89,77 @@ def _sources_to_plain(sources_md):
 
     return sources_md.replace("### ", "").replace("**", "")
 
+# FUNCTION 3
+def _format_trace(trace):
+    """
+    Renders an agent trace as readable Markdown.
+
+    Args:
+        trace: List of step dictionaries from answer_with_agent.
+    
+    Returns:
+        A Markdown string describing each decision the model made.
+    """
+
+    if not trace:
+        return "_No decisions to show._"
+    
+    lines = []
+    for t in trace:
+        step = t.get("step")    # which iteration of loop this happened on
+        kind = t.get("type")    # tool_call, final_answer, or cap hit
+
+        if kind == "tool_call":
+            args = t.get("args", {})
+            lines.append(
+                f"**Step {step}** - called '{t.get('tool')}` searching for "
+                f"_\"{args.get('query')}\"_ (k={args.get('k')})"
+            ) # shows model's own query
+        elif kind == "final_answer":
+            lines.append(f"**Step {step}** - answered from the retrieved passages.")
+        elif kind == "max_iterations_reached":
+            lines.append(
+                f"**Step {step}** - hit the iteration cap without settling on an answer."
+            )
+        else: # display unknown step type instead of silently dropping it
+            lines.append(f"**Step {step}** - {kind}")
+        
+    searches = sum(1 for t in trace if t.get("type") == "tool_call")
+        # count of actual searches
+    
+    header = f"_{searches} search(es) over {len(trace)} step(s)._\n\n"
+
+    return header + "\n\n".join(lines)
+
+
+# FUNCTION 4
+def _blank_response(message, history, llm_kwargs, trace_md=""):
+    """
+    Builds an early-exit response tuple with all passage boxes hidden.
+
+    Args:
+        message: Text to show in the answer area.
+        history: Current history list
+        llm_kwargs: Session LLM overrides, for the badge.
+        trace_md: Optional trace text.
+    
+    Returns:
+        A tuple matching the ask_outputs binding.
+    """
+
+    return (
+        message,            # goes to answer_out
+        "",                 # empty sources_out
+        *[gr.update(visible=False, value="") for _ in range(MAX_CHUNKS)],
+                            # hides every passage box (must be exaclty MAX_CHUNKS items)
+        trace_md,           # goes to trace_out
+        history,            # unchanged on early exit
+        _badge(llm_kwargs), # badge still needs refreshing
+    )
+
 
 # ___ SECTION 2: INGESTION & SETTINGS HANDLERS ___
-# FUNCTION 3
+# FUNCTION 5
 def add_uploaded_files(files):
     """
     Copies uploaded PDFs into PDF_PATH and (re-)index any new/changed ones.
@@ -133,7 +201,7 @@ def add_uploaded_files(files):
     return msg
 
 
-# FUNCTION 4
+# FUNCTION 6
 def apply_settings(provider, model, api_key, base_url):
     """
     Builds the session LLM-override dictionary from the Model tab inputs.
@@ -172,7 +240,7 @@ def apply_settings(provider, model, api_key, base_url):
     return llm_kwargs, status, _badge(llm_kwargs)
 
 
-# FUNCTION 5
+# FUNCTION 7
 def clear_session_keys(provider, model, base_url):
     """
     Resets session LLM overrides to defaults and clears the API key textbox.
@@ -195,14 +263,15 @@ def clear_session_keys(provider, model, base_url):
 
 
 # ___ SECTION 3: QUERY HANDLER ___
-# FUNCTION 6
-def ask(question, top_k, history, llm_kwargs):
+# FUNCTION 8
+def ask(question, top_k, agent_mode, history, llm_kwargs):
     """
     Runs a query; returns answer, sources, passage boxes, and updated history.
 
     Args:
         question: The user's question text.
-        top_k: No. of passages to retrieve.
+        top_k: No. of passages to retrieve. (In agentic mode, this is only a
+            fallback for when the model's tookl call omits k).
         history: Current history list (newest first).
         llm_kwargs: Session provider/model/key overrides (may be empty).
     
@@ -211,57 +280,66 @@ def ask(question, top_k, history, llm_kwargs):
         badge_html) matching the ask_outputs binding.
     """
 
-    question = (question or "").strip()
+    question = (question or "").strip() # guards against None and stray whitespace
     if not question:
-        return ( 
-            "Enter a question to get started.", 
-            "",
-            *[gr.update(visible=False, value="") for _ in range(MAX_CHUNKS)],
-            history,
-            _badge(llm_kwargs),
+        return _blank_response( 
+            "Enter a question to get started.", history, llm_kwargs
         )
     
-    if not rag.chroma_collection_is_nonempty():
-        return (
+    if not rag.chroma_collection_is_nonempty(): # nothing to cite if nothing indexed
+        return _blank_response(
             "No documents are indexed yet. Upload a PDF above, or place PDFs in "
-            f"`{rag.PDF_PATH}/` and ask again.",
-            "",
-            *[gr.update(visible=False, value="") for _ in range(MAX_CHUNKS)],
-            history,
-            _badge(llm_kwargs),
+            f"`{rag.PDF_PATH}/` and ask again.", 
+            history, llm_kwargs,
         )
     
-    try:
-        answer, citations, docs = rag.answer_with_citations(
-            question, int(top_k), llm_kwargs or None
+    try: # wrap agent and normal paths
+        if agent_mode: # agent path that also returns the decision trace
+            answer, citations, docs, trace = agent.answer_with_agent(
+                question, int(top_k), llm_kwargs or None
             )
+        else: # original single-pass
+            answer, citations, docs = rag.answer_with_citations(
+                question, int(top_k), llm_kwargs or None
+            )
+            trace = []
     except Exception as e:
-        return (
-            f"Something went wrong while answering: {e}", 
-            "",
-            *[gr.update(visible=False, value="") for _ in range(MAX_CHUNKS)],
-            history,
-            _badge(llm_kwargs),
+        return _blank_response(
+            f"Something went wrong while answering: {e}", history, llm_kwargs
             )
+    
+    trace_md = (
+        _format_trace(trace)
+        if agent_mode
+        else "_Single-pass mode: passages are retrieved once, with no decisions to trace._"
+    ) # explain empty accordion rather than leaving it blank
     
     # build the numbered source list
     source_lines = [f"**[{i}]** {label}" for i, label in citations]
     sources_md = "### Sources\n\n" + "\n\n".join(source_lines) if source_lines else ""
 
-    box_updates = []
+    # if agentic runs retrieve more than there are boxes
+    if len(docs) > MAX_CHUNKS:
+        sources_md += (
+            f"\n\n_Showing the first {MAX_CHUNKS} of {len(docs)} retrieved "
+            "passages below; citations above may refer to passages not displayed._"
+        )
+
+    box_updates = [] # one gr.update per pre-built passage box
     for i in range(MAX_CHUNKS):
         if i < len(docs):
             d = docs[i]
-            src = d.metadata.get("source", "unknown")
-            page = d.metadata.get("page", "unknown")
+            src = d.metadata.get("source", "unknown") # filename for box label
+            page = d.metadata.get("page", "unknown")  # page number for box label
             box_updates.append(
                 gr.update(
                     visible=True,
                     label=f"[{i + 1}] {src} - page {page}",
+                        # 1-based to match [n] markers in the answer
                     value=(d.page_content or "").strip(),
                 )
             )
-        else:
+        else: # no doc for this slot; hides the leftover box
             box_updates.append(gr.update(visible=False, value=""))
     
     entry = {
@@ -269,15 +347,17 @@ def ask(question, top_k, history, llm_kwargs):
         "answer": answer,
         "sources_md": sources_md,
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "mode": "agentic" if agent_mode else "single-pass",
+        "trace_md": trace_md,
     }
 
-    history = ([entry] + history) if history else [entry]
+    history = ([entry] + history) if history else [entry] # newest first
 
-    return answer, sources_md, *box_updates, history, _badge(llm_kwargs)
+    return answer, sources_md, *box_updates, trace_md, history, _badge(llm_kwargs)
 
 
 # ___ SECTION 4: HISTORY HANDLERS ___
-# FUNCTION 7
+# FUNCTION 9
 def render_history(history):
     """
     Produces accordion/body/copy-box updates for each pre-built history slot.
@@ -316,7 +396,7 @@ def render_history(history):
     return updates
 
 
-# FUNCTION 8
+# FUNCTION 10
 def clear_history():
     """
     Empties the history and collapses all history slots.
@@ -336,7 +416,7 @@ def clear_history():
 
 
 # ___ SECTION 5: EXPORT HANDLERS ___
-# FUNCTION 9
+# FUNCTION 11
 def _history_to_text(history, scope):
     """
     Renders history to a plain-text export string.
@@ -364,7 +444,7 @@ def _history_to_text(history, scope):
     return "\n\n".join(blocks) if blocks else "No history yet."
 
 
-# FUNCTION 10
+# FUNCTION 12
 def _history_to_markdown(history, scope):
     """
     Renders history to a Markdown export string.
@@ -391,7 +471,7 @@ def _history_to_markdown(history, scope):
     return "\n\n".join(blocks) if len(blocks) > 1 else "# Q&A History\n\n_No history yet._"
 
 
-# FUNCTION 11
+# FUNCTION 13
 def export_text(history, scope, fmt):
     """
     Writes the selected history to a temp .txt or .md file for download.
@@ -423,7 +503,7 @@ def export_text(history, scope, fmt):
 
 
 # ___ SECTION 6: UI ASSEMBLY & LAUNCH ___
-# FUNCTION 12
+# FUNCTION 14
 def build_ui():
     """
     Constructs and returns the Gradio Blocks app (tabs, components, binding).
@@ -466,11 +546,22 @@ def build_ui():
                     top_k = gr.Slider(
                         minimum=1, maximum=MAX_CHUNKS, value=5, step=1,
                         label="Passages to retrieve",
+                        info="In agentic mode, the model may choose its own",
                         scale=1,
                     )
-                ask_btn = gr.Button("Ask", variant="primary")
+                
+                with gr.Row(): # put button and toggle side by side
+                    ask_btn = gr.Button("Ask", variant="primary", scale=3)
+                    agent_mode = gr.Checkbox(
+                        label="Agentic mode",
+                        value=False,
+                        info="Let the model decide when and what to search",
+                        scale=1,
+                    )
 
                 answer_out = gr.Markdown(label="Answer")
+                with gr.Accordion("Reasoning trace", open=False):
+                    trace_out = gr.Markdown()
 
                 gr.Markdown("---")
                 with gr.Accordion("Sources & retrieved passages", open=True):
@@ -573,15 +664,16 @@ def build_ui():
             outputs=[llm_kwargs_state, settings_status, model_badge, api_key_tb],
         )
         
-        ask_outputs = [answer_out, sources_out, *chunk_boxes, history_state, model_badge]
+        ask_outputs = [answer_out, sources_out, *chunk_boxes, 
+                    trace_out, history_state, model_badge]
         ask_btn.click(
             ask, 
-            inputs=[question, top_k, history_state, llm_kwargs_state], 
+            inputs=[question, top_k, agent_mode, history_state, llm_kwargs_state], 
             outputs=ask_outputs,
         )
         question.submit(
             ask, 
-            inputs=[question, top_k, history_state, llm_kwargs_state], 
+            inputs=[question, top_k, agent_mode, history_state, llm_kwargs_state], 
             outputs=ask_outputs,
         )
 
