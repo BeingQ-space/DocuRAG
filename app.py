@@ -40,5 +40,10 @@ def seed_demo_docs():
 
 if __name__ == "__main__":
 	if os.environ.get("DEMO_MODE"):
+		print("DEMO_MODE set - seeding demo documents...")
 		seed_demo_docs()
-	build_ui().launch()
+
+	build_ui().launch(
+		server_name=os.environ.get("GRADIO_HOST", "127.0.0.1"),
+		server_port=int(os.environ.get("GRADIO_PORT", "7860")),
+	)
