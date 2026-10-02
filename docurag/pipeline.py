@@ -22,31 +22,26 @@ Console ingestion + retrieval Q&A with citations for a document-based RAG pipeli
 - Prompts the selected LLM to answer using ONLY the provided context, citing inline as [n].
 - Prints a retrieval preview and the final cited answer along with the document references used.
 
-P.S. File contains 5 sections, 16 functions, and one main.
+P.S. File contains 5 sections, 17 functions, and one main.
 """
 
 
-import chromadb
 import hashlib
 import json
 import os
 import urllib.request
-
-from dotenv import load_dotenv
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict, List
 
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-
-from langchain_chroma import Chroma
-from langchain_huggingface import HuggingFaceEmbeddings
-
-from langchain_core.prompts import ChatPromptTemplate
-
+import chromadb
+from dotenv import load_dotenv
 from langchain_anthropic import ChatAnthropic
+from langchain_chroma import Chroma
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
-
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from ollama import embed
 
 ########################################################################
 load_dotenv() # loads the .env file
@@ -61,10 +56,13 @@ MANIFEST_PATH = PDF_PATH / "manifest.json"
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 
+EMBEDDING_BACKEND = os.environ.get("EMBEDDING_BACKEND", "torch")
+    # "torch" (sentence-transformers) or "onnx" (fastembed)
 EMBEDDING_MODEL = os.environ.get(
     "EMBEDDING_MODEL",
     "sentence-transformers/all-MiniLM-L6-v2"
-)
+) # for both backends
+_EMBEDDING_CACHE = {} # (backend, model) -> embedding object
 
 PUBLIC_PDF_URLS = [
     # "https://example.org/some_guide.pdf"
@@ -149,6 +147,43 @@ def ensure_paths():
 
 # ___ SECTION 2: PDF INGESTION & INDEXING ___
 # FUNCTION 5
+def build_embeddings(backend=None, model=None):
+    """
+    Builds and caches an embedding function for the requested backend.
+    Both backends load the same mode - 'torch' runs it through sentence-transformers, 
+    'onnx' through fastembed's ONNX runtime, which avoids a PyTorch dependency.
+
+    Args:
+        backend: "torch" or "onnx"; defaults to EMBEDDING_BACKEND.
+        model: Model name; defaults to EMBEDDING_MODEL.
+    
+    Returns:
+        A LangChain embeddings object.
+    
+    Raises:
+        ValueError: If the backend key is not recognized.
+    """
+    backend = (backend or EMBEDDING_BACKEND).lower()
+    model = model or EMBEDDING_MODEL
+
+    key = (backend, model)
+    if key in _EMBEDDING_CACHE:
+        return _EMBEDDING_CACHE[key]
+    
+    if backend == "torch":
+        from langchain_huggingface import HuggingFaceEmbeddings
+        embeddings = HuggingFaceEmbeddings(model_name=model)
+    elif backend == "onnx":
+        from langchain_community.embeddings import FastEmbedEmbeddings
+        embeddings = FastEmbedEmbeddings(model_name=model)
+    else:
+        raise ValueError(f"Unknown embedding backend: {backend}")
+    
+    _EMBEDDING_CACHE[key] = embeddings
+
+    return embeddings
+
+# FUNCTION 6
 def download_pdfs(urls, dest_path):
     """
     Downloads any configured public PDF URLs into the destination folder. Skips URLs whose
@@ -179,7 +214,7 @@ def download_pdfs(urls, dest_path):
     return downloaded
 
 
-# FUNCTION 6
+# FUNCTION 7
 def load_and_chunk(pdf_paths: List[Path]):
     """
     Loads PDFs, splits them into overlapping chunks, and tags citation metadata. Files
@@ -236,7 +271,7 @@ def load_and_chunk(pdf_paths: List[Path]):
     return all_chunks, chunked_pdf_names
 
 
-# FUNCTION 7
+# FUNCTION 8
 def get_vectordb(embeddings):
     """
     Opens (or creates) the persistent Chroma collection.
@@ -255,7 +290,7 @@ def get_vectordb(embeddings):
     )
 
 
-# FUNCTION 8
+# FUNCTION 9
 def chroma_collection_is_nonempty():
     """
     Check whether the persisted Chroma collection contains any documents.
@@ -281,7 +316,7 @@ def chroma_collection_is_nonempty():
     return len(ids) > 0
 
 
-# FUNCTION 9
+# FUNCTION 10
 def add_new_pdfs_if_needed():
     """
     Ingests new or changed PDFs into the vector store, using the manifest to skip 
@@ -295,7 +330,7 @@ def add_new_pdfs_if_needed():
 
     ensure_paths()
 
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    embeddings = build_embeddings()
     vector_db = get_vectordb(embeddings)
     manifest = load_manifest()
 
@@ -352,7 +387,7 @@ def add_new_pdfs_if_needed():
 
 
 # ___ SECTION 3: LLM SELECTION ___
-# FUNCTION 10
+# FUNCTION 11
 def describe_active_model(llm_kwargs=None):
     """
     Resolve the provider/model that a query would use, without building the LLM.
@@ -372,7 +407,7 @@ def describe_active_model(llm_kwargs=None):
     return provider, model
 
 
-# FUNCTION 11
+# FUNCTION 12
 def build_llm(provider=None, model=None, api_key=None, base_url=None):
     """
     Builds a chat LLM. If no args, falls back to module env defaults.
@@ -444,7 +479,7 @@ def build_llm(provider=None, model=None, api_key=None, base_url=None):
 
 
 # ___ SECTION 4: RETRIEVAL & ANSWERING ___
-# FUNCTION 12
+# FUNCTION 13
 def format_retrieval_context(docs):
     """
     Formats retrieved chunks into a numbered context block for the prompt.
@@ -469,7 +504,7 @@ def format_retrieval_context(docs):
     return "\n\n".join(blocks)
 
 
-# FUNCTION 13
+# FUNCTION 14
 def docs_citations(docs):
     """
     Builds the numbered citation list aligned with the prompt's [n] markers.
@@ -490,7 +525,7 @@ def docs_citations(docs):
     return out
 
 
-# FUNCTION 14
+# FUNCTION 15
 def retrieve_top_k(query: str, k: int = 5):
     """
     Embeds the query and returns the k most similar chunks from the vector store.
@@ -503,13 +538,13 @@ def retrieve_top_k(query: str, k: int = 5):
         A list of the top-k matching chunk Documents.
     """
 
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    embeddings = build_embeddings()
     vector_db = get_vectordb(embeddings)
 
     return vector_db.similarity_search(query, k=k)
 
 
-# FUNCTION 15
+# FUNCTION 16
 def answer_with_citations(query: str, top_k: int = 5, llm_kwargs=None):
     """
     Retrieves context, asks the LLM to answer using only that context, and returns citations.
@@ -563,7 +598,7 @@ def answer_with_citations(query: str, top_k: int = 5, llm_kwargs=None):
 
 
 # ___ SECTION 5: CLI HELPERS & MAIN ___
-# FUNCTION 16
+# FUNCTION 17
 def print_retrieval_preview(docs, limit_chars: int = 200):
     """
     Prints a short, truncated preview of retrieved chunks (mainly for CLI debugging aid).
